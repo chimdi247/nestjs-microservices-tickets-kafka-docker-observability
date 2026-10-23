@@ -5,6 +5,7 @@
 #   docker compose up -d --build
 #
 # URLs
+#   Web client ......... http://localhost:4000   (Next.js UI; login admin@example.com / password123)
 #   API gateway ........ http://localhost:3000
 #   Grafana ............ http://localhost:3030   (admin / admin  - see GRAFANA_ADMIN_* in .env.example)
 #   MinIO console ...... http://localhost:9001   (minioadmin / minioadmin123)
@@ -12,6 +13,11 @@
 #   Kafka UI ........... http://localhost:8080
 #
 # All overridable values live in .env.example (copy the ones you need into .env).
+#
+# NOTE for the web client: NEXT_PUBLIC_API_BASE_URL is baked into the client image at
+# BUILD time and is called by the BROWSER, so it must be an address your browser can reach.
+# Set PUBLIC_API_URL=http://<vm-ip>:3000 in .env when browsing from another machine
+# (default http://localhost:3000 works on the host itself or through an SSH tunnel).
 # =============================================================================
 
 # ---------- shared fragments ----------
@@ -648,6 +654,31 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # WEB CLIENT (Next.js, built from ./client/Dockerfile)
+  # NEXT_PUBLIC_API_BASE_URL is inlined at build time and called by the BROWSER:
+  # use http://<vm-ip>:3000 in .env (PUBLIC_API_URL) when not browsing on the host itself.
+  # The gateway must allow this origin via CORS (e.g. http://<vm-ip>:4000).
+  # ---------------------------------------------------------------------------
+  client:
+    build:
+      context: ./client
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:-http://136.71.169.139:3000}
+    container_name: eventflowapp-client
+    ports:
+      - "4000:4000"
+    depends_on:
+      api-gateway:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:4000/ >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
     restart: unless-stopped
 
 volumes:
