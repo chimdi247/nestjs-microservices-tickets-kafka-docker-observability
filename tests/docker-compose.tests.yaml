@@ -1,0 +1,38 @@
+# Overlay used for performance testing:
+#   docker compose -f docker-compose.yaml -f tests/docker-compose.tests.yaml up -d api-gateway
+#   docker compose -f docker-compose.yaml -f tests/docker-compose.tests.yaml run --rm k6 run /scripts/smoke.js
+# (or simply: ./tests/scripts/run-k6.sh smoke)
+services:
+  # The gateway rate limiter (10 req/min per IP) would turn every load test into a 429 test.
+  api-gateway:
+    environment:
+      THROTTLE_LIMIT: "1000000"
+      THROTTLE_LOGIN_LIMIT: "1000000"
+      THROTTLE_REGISTER_LIMIT: "1000000"
+
+  # k6 inside the compose network. Results are pushed to Mimir -> "EventFlow - k6 Load Test" dashboard.
+  k6:
+    image: grafana/k6:0.57.0
+    profiles: ["k6"]
+    environment:
+      BASE_URL: http://api-gateway:3000
+      K6_PROMETHEUS_RW_SERVER_URL: http://mimir:9009/api/v1/push
+      K6_PROMETHEUS_RW_TREND_STATS: "p(95),p(99),avg,max"
+      K6_PROMETHEUS_RW_PUSH_INTERVAL: 5s
+      K6_PROMETHEUS_RW_STALE_MARKERS: "true"
+    volumes:
+      - ./tests/k6:/scripts:ro
+    depends_on:
+      - api-gateway
+      - mimir
+
+  # Optional Selenium Grid node for tests/e2e/selenium (SELENIUM_REMOTE_URL=http://localhost:4444/wd/hub)
+  selenium:
+    image: selenium/standalone-chrome:latest
+    profiles: ["selenium"]
+    shm_size: 2gb
+    ports:
+      - "4444:4444"
+      - "7900:7900"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

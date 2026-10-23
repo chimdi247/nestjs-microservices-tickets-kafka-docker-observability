@@ -1,0 +1,328 @@
+# Grafana-managed alert rules (provisioned). Notifications -> contact point 'email-oncall' (SMTP).
+# '$$' escapes '$' for Grafana's provisioning env-var expansion.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: resource-usage
+  folder: EventFlow Alerts
+  interval: 1m
+  rules:
+  - uid: alert-container-cpu
+    title: Container CPU > 40%
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: mimir
+      model:
+        refId: A
+        expr: 100 * sum by (name) (rate(container_cpu_usage_seconds_total{name=~"eventflowapp-(api-gateway|auth-service|events-service|tickets-service|notifications-service)"}[2m])) / ((sum by (name) (container_spec_cpu_quota{name=~"eventflowapp-(api-gateway|auth-service|events-service|tickets-service|notifications-service)"})
+          / sum by (name) (container_spec_cpu_period{name=~"eventflowapp-(api-gateway|auth-service|events-service|tickets-service|notifications-service)"})) > 0)
+        instant: true
+        range: false
+        intervalMs: 1000
+        maxDataPoints: 43200
+        legendFormat: '{{name}}'
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 40
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Error
+    for: 2m
+    annotations:
+      summary: CPU usage of {{ $$labels.name }} is above 40% of its limit
+      description: Container {{ $$labels.name }} uses {{ printf "%.1f" $$values.B.Value }}% of its CPU limit (threshold 40%) for more than 2 minutes.
+    labels:
+      severity: warning
+    isPaused: false
+  - uid: alert-container-memory
+    title: Container memory > 40%
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: mimir
+      model:
+        refId: A
+        expr: 100 * sum by (name) (container_memory_working_set_bytes{name=~"eventflowapp-(api-gateway|auth-service|events-service|tickets-service|notifications-service)"}) / (sum by (name) (container_spec_memory_limit_bytes{name=~"eventflowapp-(api-gateway|auth-service|events-service|tickets-service|notifications-service)"})
+          > 0)
+        instant: true
+        range: false
+        intervalMs: 1000
+        maxDataPoints: 43200
+        legendFormat: '{{name}}'
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 40
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Error
+    for: 2m
+    annotations:
+      summary: Memory usage of {{ $$labels.name }} is above 40% of its limit
+      description: Container {{ $$labels.name }} uses {{ printf "%.1f" $$values.B.Value }}% of its memory limit (threshold 40%) for more than 2 minutes.
+    labels:
+      severity: warning
+    isPaused: false
+  - uid: alert-node-cpu
+    title: Node CPU > 40%
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: mimir
+      model:
+        refId: A
+        expr: 100 * (1 - avg(rate(node_cpu_seconds_total{mode="idle"}[2m])))
+        instant: true
+        range: false
+        intervalMs: 1000
+        maxDataPoints: 43200
+        legendFormat: ''
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 40
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Error
+    for: 2m
+    annotations:
+      summary: Node CPU utilisation is above 40%
+      description: Node CPU utilisation is {{ printf "%.1f" $$values.B.Value }}% (threshold 40%) for more than 2 minutes.
+    labels:
+      severity: warning
+    isPaused: false
+  - uid: alert-node-memory
+    title: Node memory > 40%
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: mimir
+      model:
+        refId: A
+        expr: 100 * (1 - sum(node_memory_MemAvailable_bytes) / sum(node_memory_MemTotal_bytes))
+        instant: true
+        range: false
+        intervalMs: 1000
+        maxDataPoints: 43200
+        legendFormat: ''
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 40
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Error
+    for: 2m
+    annotations:
+      summary: Node memory utilisation is above 40%
+      description: Node memory utilisation is {{ printf "%.1f" $$values.B.Value }}% (threshold 40%) for more than 2 minutes.
+    labels:
+      severity: warning
+    isPaused: false
+- orgId: 1
+  name: service-health
+  folder: EventFlow Alerts
+  interval: 1m
+  rules:
+  - uid: alert-service-down
+    title: Service down
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: mimir
+      model:
+        refId: A
+        expr: probe_success{job="blackbox-http"}
+        instant: true
+        range: false
+        intervalMs: 1000
+        maxDataPoints: 43200
+        legendFormat: '{{service}}'
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: lt
+            params:
+            - 1
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Error
+    for: 1m
+    annotations:
+      summary: '{{ $$labels.service }} is failing its health probe'
+      description: The HTTP health probe of {{ $$labels.service }} has been failing for more than 1 minute.
+    labels:
+      severity: critical
+    isPaused: false
+  - uid: alert-http-5xx-ratio
+    title: High HTTP 5xx ratio (> 5%)
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: mimir
+      model:
+        refId: A
+        expr: 100 * sum by (job) (rate(app_http_requests_total{status_code=~"5.."}[5m])) / (sum by (job) (rate(app_http_requests_total[5m])) > 0)
+        instant: true
+        range: false
+        intervalMs: 1000
+        maxDataPoints: 43200
+        legendFormat: '{{job}}'
+    - refId: B
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: last
+        settings:
+          mode: dropNN
+        datasource:
+          type: __expr__
+          uid: __expr__
+    - refId: C
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 5
+        datasource:
+          type: __expr__
+          uid: __expr__
+    noDataState: OK
+    execErrState: Error
+    for: 5m
+    annotations:
+      summary: '{{ $$labels.job }} is returning too many 5xx responses'
+      description: More than 5% of requests to {{ $$labels.job }} failed with 5xx for 5 minutes (now {{ printf "%.1f" $$values.B.Value }}%).
+    labels:
+      severity: critical
+    isPaused: false

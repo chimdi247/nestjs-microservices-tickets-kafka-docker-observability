@@ -1,0 +1,664 @@
+# =============================================================================
+# EventFlow - development environment
+#   app services + infrastructure + full observability stack (Grafana LGTM + OTel)
+#
+#   docker compose up -d --build
+#
+# URLs
+#   API gateway ........ http://localhost:3000
+#   Grafana ............ http://localhost:3030   (admin / admin  - see GRAFANA_ADMIN_* in .env.example)
+#   MinIO console ...... http://localhost:9001   (minioadmin / minioadmin123)
+#   MailHog ............ http://localhost:8025   (app emails + Grafana alert emails)
+#   Kafka UI ........... http://localhost:8080
+#
+# All overridable values live in .env.example (copy the ones you need into .env).
+# =============================================================================
+
+# ---------- shared fragments ----------
+x-otel-env: &otel-env
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+  OTEL_METRIC_EXPORT_INTERVAL: "15000"
+  OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_always_on}   # prod: parentbased_traceidratio + OTEL_TRACES_SAMPLER_ARG=0.1
+  DEPLOYMENT_ENVIRONMENT: docker-compose
+
+x-s3-env: &s3-env
+  S3_ENDPOINT: ${S3_ENDPOINT:-minio:9000}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+  S3_INSECURE: ${S3_INSECURE:-true}
+  MIMIR_BLOCKS_BUCKET: ${MIMIR_BLOCKS_BUCKET:-mimir-blocks}
+  MIMIR_RULER_BUCKET: ${MIMIR_RULER_BUCKET:-mimir-ruler}
+  LOKI_CHUNKS_BUCKET: ${LOKI_CHUNKS_BUCKET:-loki-chunks}
+  LOKI_RULER_BUCKET: ${LOKI_RULER_BUCKET:-loki-ruler}
+  TEMPO_BUCKET: ${TEMPO_BUCKET:-tempo-traces}
+
+# Hard limits make "CPU % / memory % of limit" (dashboards + the 40% alerts) meaningful.
+x-app-limits: &app-limits
+  deploy:
+    resources:
+      limits:
+        cpus: "1.0"
+        memory: 768M
+
+services:
+  # ===========================================================================
+  # INFRASTRUCTURE
+  # ===========================================================================
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.5.0
+    container_name: eventflowapp-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper-data:/var/lib/zookeeper/data
+      - zookeeper-logs:/var/lib/zookeeper/log
+
+  # Kafka broker + Prometheus JMX exporter java-agent (broker request latency, ISR, throughput on :7071)
+  kafka:
+    build:
+      context: ./docker/kafka
+    image: eventflowapp/kafka-jmx:7.5.0
+    container_name: eventflowapp-kafka
+    depends_on:
+      - zookeeper
+    ports:
+      - "9093:9092"
+      - "29092:29092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:29092,PLAINTEXT_HOST://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_HEAP_OPTS: "-Xms512m -Xmx512m"
+      KAFKA_OPTS: "-javaagent:/opt/jmx/jmx_prometheus_javaagent.jar=7071:/opt/jmx/kafka-jmx.yml"
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: eventflowapp-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: eventflowapp
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+
+  # PostgreSQL primary. On FIRST start of an empty volume it runs docker/postgres/init/*:
+  #   00-replication.sh  replication role + slot for the standby
+  #   01-schema.sql      all tables
+  #   02-admin-user.sql  admin@example.com / password123 (bcrypt hashed)
+  postgres:
+    image: postgres:16-alpine
+    container_name: eventflowapp-postgres
+    command:
+      - postgres
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: eventflowapp
+      POSTGRES_PASSWORD: eventflow_password
+      POSTGRES_DB: eventflowapp
+      REPLICATION_USER: replicator
+      REPLICATION_PASSWORD: replicator_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventflowapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Streaming hot-standby of the primary (makes "replication lag" a real, observable metric)
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: eventflowapp-postgres-replica
+    user: postgres
+    entrypoint: ["/bin/sh", "/replica-entrypoint.sh"]
+    environment:
+      POSTGRES_USER: eventflowapp
+      PGDATA: /var/lib/postgresql/data
+      PRIMARY_HOST: postgres
+      REPLICATION_USER: replicator
+      REPLICATION_PASSWORD: replicator_password
+    volumes:
+      - postgres-replica-data:/var/lib/postgresql/data
+      - ./docker/postgres/replica-entrypoint.sh:/replica-entrypoint.sh:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eventflowapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # Connection pooler (transaction pooling). Application services connect HERE, not to postgres.
+  pgbouncer:
+    build:
+      context: ./docker/pgbouncer
+    image: eventflowapp/pgbouncer:1.0
+    container_name: eventflowapp-pgbouncer
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "6432:6432"
+    volumes:
+      - ./docker/pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./docker/pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 6432 -U eventflowapp -d eventflowapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis: gateway rate-limiter storage. maxmemory makes "memory usage %" meaningful.
+  redis:
+    image: redis:7-alpine
+    container_name: eventflowapp-redis
+    command: ["redis-server", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ===========================================================================
+  # DEVELOPMENT TOOLS
+  # ===========================================================================
+
+  # MailHog: catches application emails AND Grafana alert emails (SMTP :1025, UI :8025)
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: eventflowapp-mailhog
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
+  # ===========================================================================
+  # OBJECT STORAGE (S3) - persistent backend for Mimir / Loki / Tempo
+  # Locally MinIO; on AWS set S3_ENDPOINT/S3_REGION/S3_ACCESS_KEY/S3_SECRET_KEY/S3_INSECURE=false
+  # (and drop these two services) - the Mimir/Loki/Tempo configs do not change.
+  # ===========================================================================
+
+  minio:
+    image: elestio/minio:latest
+    container_name: eventflowapp-minio
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  # one-shot: creates the buckets (idempotent)
+  minio-init:
+    image: pgsty/mc:latest
+    container_name: eventflowapp-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      BUCKETS: "${MIMIR_BLOCKS_BUCKET:-mimir-blocks} ${MIMIR_RULER_BUCKET:-mimir-ruler} ${LOKI_CHUNKS_BUCKET:-loki-chunks} ${LOKI_RULER_BUCKET:-loki-ruler} ${TEMPO_BUCKET:-tempo-traces}"
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$S3_ACCESS_KEY" "$$S3_SECRET_KEY"
+        for b in $$BUCKETS; do mc mb --ignore-existing "local/$$b"; done
+        echo "buckets ready:"; mc ls local
+    restart: "no"
+
+  # one-shot: Mimir/Loki/Tempo run as uid 10001; fresh named volumes are root-owned
+  init-permissions:
+    image: busybox:1.36
+    container_name: eventflowapp-init-permissions
+    user: root
+    command: ["sh", "-c", "chown -R 10001:10001 /mimir /loki /tempo"]
+    volumes:
+      - mimir-data:/mimir
+      - loki-data:/loki
+      - tempo-data:/tempo
+    restart: "no"
+
+  # ===========================================================================
+  # OBSERVABILITY STACK
+  # ===========================================================================
+
+  mimir:
+    image: grafana/mimir:2.16.0
+    container_name: eventflowapp-mimir
+    command: ["-config.file=/etc/mimir/mimir.yaml", "-config.expand-env=true"]
+    environment:
+      <<: *s3-env
+    ports:
+      - "9009:9009"
+    volumes:
+      - ./observability/mimir/mimir.yaml:/etc/mimir/mimir.yaml:ro
+      - mimir-data:/data
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      init-permissions:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: eventflowapp-loki
+    command: ["-config.file=/etc/loki/loki.yaml", "-config.expand-env=true"]
+    environment:
+      <<: *s3-env
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./observability/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      init-permissions:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    container_name: eventflowapp-tempo
+    command: ["-config.file=/etc/tempo/tempo.yaml", "-config.expand-env=true"]
+    environment:
+      <<: *s3-env
+    ports:
+      - "3200:3200"
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    depends_on:
+      minio-init:
+        condition: service_completed_successfully
+      init-permissions:
+        condition: service_completed_successfully
+      mimir:
+        condition: service_started
+    restart: unless-stopped
+
+  # Single ingestion point: apps push OTLP here; it also scrapes every exporter below.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    container_name: eventflowapp-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    volumes:
+      - ./observability/otel-collector/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    depends_on:
+      - mimir
+      - loki
+      - tempo
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: eventflowapp-grafana
+    ports:
+      - "3030:3000"   # 3000 is taken by the api-gateway
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # ---- SMTP for Grafana-managed alerts (defaults to the bundled MailHog) ----
+      GF_SMTP_ENABLED: "true"
+      GF_SMTP_HOST: ${SMTP_HOST:-}:${SMTP_PORT:-}
+      GF_SMTP_USER: ${SMTP_USER:-}
+      GF_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      GF_SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-grafana-alerts@eventflow.com}
+      GF_SMTP_FROM_NAME: EventFlow Alerts
+      GF_SMTP_STARTTLS_POLICY: ${SMTP_STARTTLS_POLICY:-}
+      GF_SMTP_SKIP_VERIFY: "true"
+      # recipients of the provisioned contact point (observability/grafana/provisioning/alerting)
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/grafana.ini:/etc/grafana/grafana.ini:ro
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - mimir
+      - loki
+      - tempo
+      - mailhog
+    restart: unless-stopped
+
+  # ===========================================================================
+  # EXPORTERS (scraped by the otel-collector)
+  # ===========================================================================
+
+  # per-container CPU / memory / network
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    container_name: eventflowapp-cadvisor
+    privileged: true
+    command:
+      - --docker_only=true
+      - --housekeeping_interval=15s
+      - --store_container_labels=false
+      - --whitelisted_container_labels=com.docker.compose.service
+    devices:
+      - /dev/kmsg
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+
+  # node / host CPU, memory, disk, load
+  node-exporter:
+    image: prom/node-exporter:v1.8.2
+    container_name: eventflowapp-node-exporter
+    pid: host
+    command:
+      - --path.rootfs=/host
+    volumes:
+      - /:/host:ro
+    restart: unless-stopped
+
+  # uptime: HTTP probes of every service's /health
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: eventflowapp-blackbox-exporter
+    command: ["--config.file=/etc/blackbox/blackbox.yml"]
+    volumes:
+      - ./observability/blackbox/blackbox.yml:/etc/blackbox/blackbox.yml:ro
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: eventflowapp-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: postgresql://eventflowapp:eventflow_password@postgres:5432/eventflowapp?sslmode=disable
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yaml
+    volumes:
+      - ./observability/postgres-exporter/queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres-replica-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.16.0
+    container_name: eventflowapp-postgres-replica-exporter
+    environment:
+      DATA_SOURCE_NAME: postgresql://eventflowapp:eventflow_password@postgres-replica:5432/eventflowapp?sslmode=disable
+      PG_EXPORTER_EXTEND_QUERY_PATH: /etc/postgres-exporter/queries.yaml
+    volumes:
+      - ./observability/postgres-exporter/queries.yaml:/etc/postgres-exporter/queries.yaml:ro
+    depends_on:
+      - postgres-replica
+    restart: unless-stopped
+
+  pgbouncer-exporter:
+    image: prometheuscommunity/pgbouncer-exporter:v0.10.2
+    container_name: eventflowapp-pgbouncer-exporter
+    command:
+      - --pgBouncer.connectionString=postgres://eventflowapp:eventflow_password@pgbouncer:6432/pgbouncer?sslmode=disable
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    container_name: eventflowapp-redis-exporter
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+
+  # consumer lag, offsets (=> produced / consumed msg/s), under-replicated partitions
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.8.0
+    container_name: eventflowapp-kafka-exporter
+    command:
+      - --kafka.server=kafka:29092
+    depends_on:
+      - kafka
+    restart: unless-stopped
+
+  # ===========================================================================
+  # APPLICATION SERVICES (OpenTelemetry: traces + metrics + logs -> otel-collector)
+  # ===========================================================================
+
+  api-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: api-gateway
+    container_name: eventflowapp-api-gateway
+    <<: *app-limits
+    ports:
+      - "3000:3000"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: api-gateway
+      NODE_ENV: production
+      PORT: "3000"
+      AUTH_SERVICE_URL: http://auth-service:3001
+      EVENTS_SERVICE_URL: http://events-service:3003     # was :3002 (nothing listens there)
+      TICKETS_SERVICE_URL: http://tickets-service:3004   # was :3003 (that is the events-service)
+      JWT_SECRET: your_jwt_secret_key
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # rate limiting (defaults = original hard-coded values); relaxed by tests/docker-compose.tests.yaml
+      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-10}
+      THROTTLE_LOGIN_LIMIT: ${THROTTLE_LOGIN_LIMIT:-5}
+      THROTTLE_REGISTER_LIMIT: ${THROTTLE_REGISTER_LIMIT:-3}
+    depends_on:
+      auth-service:
+        condition: service_started
+      events-service:
+        condition: service_started
+      tickets-service:
+        condition: service_started
+      redis:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: auth-service
+    container_name: eventflowapp-auth-service
+    <<: *app-limits
+    ports:
+      - "3001:3001"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: auth-service
+      NODE_ENV: production
+      PORT: "3001"
+      DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
+      KAFKA_BROKER: kafka:29092
+      JWT_SECRET: your_jwt_secret_key
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      kafka:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3001/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  events-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: events-service
+    container_name: eventflowapp-events-service
+    <<: *app-limits
+    ports:
+      - "3003:3003"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: events-service
+      NODE_ENV: production
+      PORT: "3003"
+      DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
+      KAFKA_BROKER: kafka:29092
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3003/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  tickets-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: tickets-service
+    container_name: eventflowapp-tickets-service
+    <<: *app-limits
+    ports:
+      - "3004:3004"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: tickets-service
+      NODE_ENV: production
+      PORT: "3004"
+      DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
+      KAFKA_BROKER: kafka:29092
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3004/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  notifications-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: notifications-service
+    container_name: eventflowapp-notifications-service
+    <<: *app-limits
+    ports:
+      - "3006:3006"
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: notifications-service
+      NODE_ENV: production
+      PORT: "3006"
+      DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
+      KAFKA_BROKER: kafka:29092
+      SMTP_HOST: mailhog
+      SMTP_PORT: "1025"
+    depends_on:
+      pgbouncer:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+      kafka:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3006/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+volumes:
+  zookeeper-data:
+  zookeeper-logs:
+  kafka-data:
+  postgres-data:
+  postgres-replica-data:
+  redis-data:
+  minio-data:
+  mimir-data:
+  loki-data:
+  tempo-data:
+  grafana-data:

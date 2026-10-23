@@ -1,0 +1,62 @@
+# Grafana Tempo - single binary, trace blocks persisted in S3.
+# Started with: -config.file=/etc/tempo/tempo.yaml -config.expand-env=true
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: warn
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m          # cut blocks quickly so traces reach S3 / become searchable fast in dev
+
+compactor:
+  compaction:
+    block_retention: 336h         # 14 days
+
+# Derives RED + service-graph metrics from traces and remote-writes them to Mimir.
+# Powers Grafana's Service Map and the "metrics for this span" links.
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+  storage:
+    path: /var/tempo/generator/wal
+    remote_write:
+      - url: http://mimir:9009/api/v1/push
+        send_exemplars: true
+  traces_storage:
+    path: /var/tempo/generator/traces
+  processor:
+    service_graphs: {}
+    span_metrics: {}
+
+storage:
+  trace:
+    backend: s3
+    s3:
+      bucket: ${TEMPO_BUCKET}
+      endpoint: ${S3_ENDPOINT}
+      region: ${S3_REGION}
+      access_key: ${S3_ACCESS_KEY}
+      secret_key: ${S3_SECRET_KEY}
+      insecure: ${S3_INSECURE}
+      forcepathstyle: true
+    wal:
+      path: /var/tempo/wal
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors: [service-graphs, span-metrics, local-blocks]
+
+usage_report:
+  reporting_enabled: false

@@ -1,0 +1,13 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "moduleResolution": "node",
+    "esModuleInterop": true,
+    "strict": false,
+    "skipLibCheck": true,
+    "types": ["jest", "node"],
+    "lib": ["ES2022", "DOM"]
+  },
+  "include": ["integration/**/*", "e2e/**/*"]
+}

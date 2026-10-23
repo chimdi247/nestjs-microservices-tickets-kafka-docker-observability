@@ -1,0 +1,30 @@
+{
+  "name": "eventflow-tests",
+  "private": true,
+  "description": "Smoke / load / stress / spike / soak, integration, UI (Selenium) and e2e (Playwright) tests for EventFlow",
+  "scripts": {
+    "test:unit": "npm --prefix .. run test:unit",
+    "test:integration": "jest --config integration/jest.config.js",
+    "test:integration:observability": "jest --config integration/jest.config.js observability",
+    "test:e2e": "playwright test --config e2e/playwright/playwright.config.ts",
+    "test:e2e:install": "playwright install --with-deps chromium firefox",
+    "test:selenium": "jest --rootDir e2e/selenium --testRegex \".*\\.test\\.js$\"",
+    "perf:smoke": "bash scripts/run-k6.sh smoke",
+    "perf:load": "bash scripts/run-k6.sh load",
+    "perf:stress": "bash scripts/run-k6.sh stress",
+    "perf:spike": "bash scripts/run-k6.sh spike",
+    "perf:soak": "bash scripts/run-k6.sh soak",
+    "perf:breakpoint": "bash scripts/run-k6.sh breakpoint",
+    "perf:kafka-burst": "node performance/kafka-burst.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.0",
+    "@types/jest": "^29.5.14",
+    "@types/node": "^20.17.0",
+    "jest": "^29.7.0",
+    "kafkajs": "^2.2.4",
+    "selenium-webdriver": "^4.27.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3"
+  }
+}

@@ -1,0 +1,36 @@
+lowercaseOutputName: true
+lowercaseOutputLabelNames: true
+rules:
+  # ---- Broker request latency (the "Broker Request Latency" panel) ----
+  # Yammer histograms expose percentiles as attributes: 50thPercentile, 95thPercentile, 99thPercentile ...
+  - pattern: 'kafka.network<type=RequestMetrics, name=(TotalTimeMs|RequestQueueTimeMs|LocalTimeMs|RemoteTimeMs|ResponseQueueTimeMs|ResponseSendTimeMs), request=(Produce|FetchConsumer|FetchFollower|Metadata|JoinGroup|SyncGroup|OffsetCommit|Heartbeat)><>(50|95|99)thPercentile'
+    name: kafka_request_time_ms
+    type: GAUGE
+    labels:
+      stage: "$1"
+      request: "$2"
+      quantile: "0.$3"
+  - pattern: 'kafka.network<type=RequestMetrics, name=(TotalTimeMs), request=(Produce|FetchConsumer|FetchFollower|Metadata|JoinGroup|SyncGroup|OffsetCommit|Heartbeat)><>Mean'
+    name: kafka_request_time_ms_mean
+    type: GAUGE
+    labels:
+      stage: "$1"
+      request: "$2"
+  - pattern: 'kafka.network<type=RequestMetrics, name=RequestsPerSec, request=(.+), version=(.+)><>OneMinuteRate'
+    name: kafka_requests_per_sec
+    type: GAUGE
+    labels:
+      request: "$1"
+
+  # ---- Throughput ----
+  - pattern: 'kafka.server<type=BrokerTopicMetrics, name=(MessagesInPerSec|BytesInPerSec|BytesOutPerSec)><>OneMinuteRate'
+    name: kafka_broker_$1
+    type: GAUGE
+
+  # ---- Replication health ----
+  - pattern: 'kafka.server<type=ReplicaManager, name=(UnderReplicatedPartitions|UnderMinIsrPartitionCount|PartitionCount|LeaderCount)><>Value'
+    name: kafka_server_replicamanager_$1
+    type: GAUGE
+  - pattern: 'kafka.controller<type=KafkaController, name=(ActiveControllerCount|OfflinePartitionsCount)><>Value'
+    name: kafka_controller_$1
+    type: GAUGE

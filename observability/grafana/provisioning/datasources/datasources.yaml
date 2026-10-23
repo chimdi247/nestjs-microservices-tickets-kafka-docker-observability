@@ -1,0 +1,76 @@
+apiVersion: 1
+
+# Note: "$$" is Grafana's escape for a literal "$" inside provisioning files
+# (single "$VAR" would be expanded from the container environment).
+datasources:
+  # ---------------- Metrics: Grafana Mimir (Prometheus compatible) ----------------
+  - name: Mimir
+    uid: mimir
+    type: prometheus
+    access: proxy
+    url: http://mimir:9009/prometheus
+    isDefault: true
+    editable: false
+    jsonData:
+      httpMethod: POST
+      prometheusType: Mimir
+      timeInterval: 15s
+      # click an exemplar dot on a latency graph -> jump to the trace in Tempo
+      exemplarTraceIdDestinations:
+        - name: trace_id
+          datasourceUid: tempo
+
+  # ---------------- Logs: Grafana Loki ----------------
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: false
+    jsonData:
+      maxLines: 1000
+      # click a log line -> "View trace" button -> opens the full trace + spans in Tempo
+      derivedFields:
+        - name: TraceID
+          datasourceUid: tempo
+          matcherRegex: '"trace_id":"(\w+)"'
+          url: '$${__value.raw}'
+          urlDisplayLabel: View trace
+
+  # ---------------- Traces: Grafana Tempo ----------------
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    editable: false
+    jsonData:
+      nodeGraph:
+        enabled: true
+      serviceMap:
+        datasourceUid: mimir
+      # span -> logs of the same service, filtered by trace id
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-1m'
+        spanEndTimeShift: '1m'
+        tags:
+          - key: service.name
+            value: service_name
+        filterByTraceID: true
+        filterBySpanID: false
+      # span -> RED metrics of that service
+      tracesToMetrics:
+        datasourceUid: mimir
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        tags:
+          - key: service.name
+            value: job
+        queries:
+          - name: Request rate
+            query: 'sum(rate(app_http_requests_total{$$__tags}[$$__rate_interval]))'
+          - name: Error rate (5xx)
+            query: 'sum(rate(app_http_requests_total{$$__tags,status_code=~"5.."}[$$__rate_interval]))'
+          - name: p95 latency (s)
+            query: 'histogram_quantile(0.95, sum by (le) (rate(app_http_request_duration_seconds_bucket{$$__tags}[$$__rate_interval])))'
