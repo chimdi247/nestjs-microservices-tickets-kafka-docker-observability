@@ -14,7 +14,7 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bufferLogs: true });
 
   app.enableCors({
-    origin: ['http://localhost:4000', 'https://mytrusteddomain.com'].filter(
+    origin: ['http://localhost:4000', 'http://localhost:3000' ,'http://136.71.169.139:3000'].filter(
       Boolean,
     ),
     credentials: true,
