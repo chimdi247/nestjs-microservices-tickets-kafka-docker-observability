@@ -2,7 +2,7 @@
 # Dependency stage
 FROM node:20-alpine AS deps
 
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10
 
 WORKDIR /app
 
@@ -18,7 +18,7 @@ FROM node:20-alpine AS builder
 ARG SERVICE
 ENV SERVICE=${SERVICE}
 
-RUN npm install -g pnpm
+RUN npm install -g pnpm@10
 
 WORKDIR /app
 
