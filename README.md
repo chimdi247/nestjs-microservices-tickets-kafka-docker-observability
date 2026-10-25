@@ -96,3 +96,78 @@ Nest is an MIT-licensed open source project. It can grow thanks to the sponsors 
 ## License
 
 Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+
+---
+
+## Web client: end-to-end flows
+
+The Next.js client (`client/`, port 4000) talks only to the API gateway (`NEXT_PUBLIC_API_BASE_URL`).
+
+| Page | Who | What it does |
+|------|-----|--------------|
+| `/` | everyone | upcoming events, personal greeting and shortcuts |
+| `/events`, `/events/:id` | everyone | catalogue with search, live seats left, ticket booking (sign-in required to book) |
+| `/tickets` | signed-in | my tickets with codes, cancel before the event starts |
+| `/organizer` | organizer / admin | my events: publish, cancel, manage |
+| `/organizer/events/new`, `/organizer/events/:id/edit` | organizer / admin | create / edit an event |
+| `/organizer/events/:id` | organizer / admin | seats sold, revenue, attendee list, per-ticket check-in |
+| `/organizer/check-in` | organizer / admin | check a guest in by ticket code |
+
+Sign up with "I want to organize events" to get the organizer role (`ADMIN` is never self-assignable;
+`admin@example.com / password123` is seeded). Fresh databases also get four demo events (`03-demo-events.sql`).
+Prices are stored in cents.
+
+### Consistency guarantees
+
+- **No overselling**: ticket purchase runs in one transaction holding a row lock (`SELECT ... FOR UPDATE`) on the event;
+  event update and cancel take the same lock.
+- **One definition of "seats taken"** (`ACTIVE_TICKET_STATUSES`: PENDING, CONFIRMED, CHECKED_IN) shared by the
+  events-service (availability shown in the UI) and the tickets-service (purchase check).
+- **Event cancel cascades**: the event and all its unused tickets are cancelled in one transaction; attendees get an e-mail.
+- Capacity cannot be lowered below sold seats; cancelled events cannot be edited/published; past events cannot be booked.
+- Check-in and ticket cancel use conditional updates, so racing requests cannot double-apply.
+- JWT carries the role; the gateway forwards `x-user-id` / `x-user-role` and the services enforce ownership
+  (organizer or admin). Only organizers/admins can create events.
+- Gateway CORS origins: `CORS_ORIGINS` (comma separated); rate limits raised for browser use (see `.env.example`).
+
+
+---
+
+## Payments (Stripe Checkout)
+
+Paid events are paid with [Stripe Checkout](https://stripe.com/docs/payments/checkout) (hosted page, USD).
+Free events (price 0) are confirmed instantly and never touch Stripe. Minimum paid price: $0.50.
+
+```
+client -- POST /tickets/purchase --> gateway -> tickets-service
+            (one transaction, event row locked: seats held, ticket = PENDING, expires_at = now + 30 min)
+        <-- { ticket, checkoutUrl } -- tickets-service -> payments-service -> Stripe (create session)
+client --> redirect to Stripe, pays --> Stripe --webhook--> gateway /payments/webhook -> payments-service
+            (signature verified on the RAW body; event id stored => duplicate deliveries are ignored)
+            payment = PAID, ticket = CONFIRMED, Kafka: payment.completed + ticket.purchased (=> e-mail)
+```
+
+| Situation | What happens |
+|-----------|--------------|
+| Not paid within the window | tickets-service job cancels the PENDING ticket (seats freed); payments-service closes the Stripe session |
+| User cancels a PENDING booking | seats freed at once, session closed |
+| User cancels a paid ticket / organizer cancels the event | ticket is CANCELLED, then the payments-service reconcile job (every 30 s) refunds the PAID payment through Stripe and e-mails the user. A failed refund stays PAID and is retried |
+| Payment arrives after the booking expired | recorded as PAID, the reconcile job refunds it automatically |
+| Refund made in the Stripe dashboard | `charge.refunded` webhook cancels the ticket |
+
+### Setup
+
+1. **Database migrations are automatic**: the one-shot `db-migrate` container applies every file in
+   `docker/postgres/migrations/` (idempotent) on each `docker compose up`, before the app services start.
+   (The Postgres init scripts only run on an empty volume, which is why existing databases need this.)
+2. Put your **test** keys in `.env` (see `.env.example`): `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and
+   `CLIENT_URL` (the public URL of the web client; Stripe redirects the browser back to it).
+3. Deliver webhooks. Locally (newer Stripe CLIs require `--events`):
+   `stripe listen --events checkout.session.completed,checkout.session.expired,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,charge.refunded --forward-to localhost:3000/payments/webhook`
+   (prints the `whsec_...` secret; put it in `.env` as `STRIPE_WEBHOOK_SECRET` and restart the payments-service). In production add the endpoint `https://<gateway>/payments/webhook` in the Stripe dashboard with the events
+   `checkout.session.completed`, `checkout.session.expired`, `checkout.session.async_payment_succeeded`,
+   `checkout.session.async_payment_failed` and `charge.refunded`.
+4. `docker compose up -d --build`. Pay with the test card `4242 4242 4242 4242` (any future date, any CVC).
+
+Without `STRIPE_SECRET_KEY` the platform still runs: free events work, paid events answer
+"Payments are not configured" and hold no seats.

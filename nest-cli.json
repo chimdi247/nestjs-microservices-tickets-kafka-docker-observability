@@ -90,6 +90,15 @@
       "compilerOptions": {
         "tsConfigPath": "libs/observability/tsconfig.lib.json"
       }
+    },
+    "payments-service": {
+      "type": "application",
+      "root": "apps/payments-service",
+      "entryFile": "main",
+      "sourceRoot": "apps/payments-service/src",
+      "compilerOptions": {
+        "tsConfigPath": "apps/payments-service/tsconfig.app.json"
+      }
     }
   }
 }

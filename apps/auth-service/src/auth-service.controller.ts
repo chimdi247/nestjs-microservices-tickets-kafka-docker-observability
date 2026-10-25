@@ -16,7 +16,11 @@ export class AuthServiceController {
 
   @Post('register')
   register(@Body() dto: RegisterDto) {
-    return this.authServiceService.register(dto.email, dto.password, dto.name);
+    return this.authServiceService.register(dto.email,
+      dto.password,
+      dto.name,
+      dto.role,
+    );
   }
 
   @Post('login')

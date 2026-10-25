@@ -38,6 +38,15 @@ export class TicketController {
     return this.ticketsService.findOne(id, req.user.userId);
   }
 
+  /** start or resume the Stripe payment of a booking that is awaiting payment */
+  @Post(':id/pay')
+  pay(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Request() req: { user: { userId: string } },
+  ) {
+    return this.ticketsService.pay(id, req.user.userId);
+  }
+
   @Post(':id/cancel')
   cancel(
     @Param('id', ParseUUIDPipe) id: string,
@@ -49,16 +58,24 @@ export class TicketController {
   @Post('check-in')
   checkIn(
     @Body() checkInDto: CheckInTicketDto,
-    @Request() req: { user: { userId: string } },
+    @Request() req: { user: { userId: string; role?: string } },
   ) {
-    return this.ticketsService.checkIn(checkInDto, req.user.userId);
+    return this.ticketsService.checkIn(
+      checkInDto,
+      req.user.userId,
+      req.user.role || 'USER',
+    );
   }
 
   @Get('event/:eventId')
   findEventTickets(
     @Param('eventId', ParseUUIDPipe) eventId: string,
-    @Request() req: { user: { userId: string } },
+    @Request() req: { user: { userId: string; role?: string } },
   ) {
-    return this.ticketsService.findEventTickets(eventId, req.user.userId);
+    return this.ticketsService.findEventTickets(
+      eventId,
+      req.user.userId,
+      req.user.role || 'USER',
+    );
   }
 }

@@ -11,12 +11,23 @@ import {
 } from '@app/common';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const app = await NestFactory.create(AppModule, {
+    bufferLogs: true,
+    // keeps the unparsed body of POST /payments/webhook (Stripe signs the raw bytes)
+    rawBody: true,
+  });
+
+  // Browser origins allowed to call the gateway. Override with CORS_ORIGINS="http://a:4000,http://b:4000"
+  const corsOrigins = (
+    process.env.CORS_ORIGINS ||
+    'http://localhost:4000,http://127.0.0.1:4000,http://localhost:3000,http://136.71.169.139:4000'
+  )
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
 
   app.enableCors({
-    origin: ['http://localhost:4000', 'http://localhost:3000' ,'http://136.71.169.139:4000'].filter(
-      Boolean,
-    ),
+    origin: corsOrigins,
     credentials: true,
     methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization'],

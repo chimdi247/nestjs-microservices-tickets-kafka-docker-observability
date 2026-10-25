@@ -19,8 +19,9 @@ export class EventsServiceController {
   create(
     @Body() createEventDto: CreateEventDto,
     @Headers('x-user-id') userId: string,
+    @Headers('x-user-role') userRole: string,
   ) {
-    return this.eventsServiceService.create(createEventDto, userId);
+    return this.eventsServiceService.create(createEventDto, userId, userRole);
   }
 
   @Get()
@@ -34,8 +35,12 @@ export class EventsServiceController {
   }
 
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.eventsServiceService.findOne(id);
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Headers('x-user-id') userId?: string,
+    @Headers('x-user-role') userRole?: string,
+  ) {
+    return this.eventsServiceService.findOne(id, userId, userRole);
   }
 
   @Put(':id')

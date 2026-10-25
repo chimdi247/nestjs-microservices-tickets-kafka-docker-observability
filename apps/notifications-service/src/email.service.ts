@@ -9,10 +9,16 @@ export class EmailService implements OnModuleInit {
   private readonly logger = new Logger(EmailService.name);
 
   onModuleInit() {
+    const user = process.env.SMTP_USER;
+    const pass = process.env.SMTP_PASSWORD;
+
     this.transporter = nodemailer.createTransport({
       host: process.env.SMTP_HOST || 'localhost',
       port: parseInt(process.env.SMTP_PORT || '1025', 10),
-      secure: false,
+      secure: process.env.SMTP_SECURE === 'true', // true only for port 465
+      requireTLS: process.env.SMTP_REQUIRE_TLS === 'true', // true for port 587 (STARTTLS)
+      // MailHog (local default) needs no login; real providers such as Gmail do
+      ...(user && pass ? { auth: { user, pass } } : {}),
     });
 
     this.logger.log('Email service initialized');
@@ -30,7 +36,8 @@ export class EmailService implements OnModuleInit {
       async (span) => {
         try {
           await this.transporter.sendMail({
-            from: '"EventflowApp" <noreply@eventflowapp.com>',
+            from:
+              process.env.SMTP_FROM || '"EventFlow" <noreply@eventflowapp.com>',
             to,
             subject,
             html,

@@ -82,6 +82,7 @@ services:
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9093
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -159,6 +160,38 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+
+  # one-shot: applies docker/postgres/migrations/*.sql (idempotent) on EVERY start, so databases created
+  # by an older version are upgraded automatically. The init scripts only run on an empty volume.
+  db-migrate:
+    image: postgres:16-alpine
+    container_name: eventflowapp-db-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: eventflowapp
+      PGPASSWORD: eventflow_password
+      PGDATABASE: eventflowapp
+    volumes:
+      - ./docker/postgres/migrations:/migrations:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        # wait until the real server (TCP) is up and the base schema exists (first start: init scripts)
+        i=0
+        until [ "$$(psql -tAc "SELECT to_regclass('public.tickets') IS NOT NULL" 2>/dev/null)" = "t" ]; do
+          i=$$((i+1)); [ $$i -gt 60 ] && { echo "base schema not found"; exit 1; }
+          sleep 2
+        done
+        for f in $$(ls /migrations/*.sql | sort); do
+          echo "applying $$f"
+          psql -v ON_ERROR_STOP=1 -f "$$f"
+        done
+        echo "migrations done"
+    restart: "no"
 
   # Connection pooler (transaction pooling). Application services connect HERE, not to postgres.
   pgbouncer:
@@ -495,19 +528,24 @@ services:
       AUTH_SERVICE_URL: http://auth-service:3001
       EVENTS_SERVICE_URL: http://events-service:3003     # was :3002 (nothing listens there)
       TICKETS_SERVICE_URL: http://tickets-service:3004   # was :3003 (that is the events-service)
+      PAYMENTS_SERVICE_URL: http://payments-service:3005
       JWT_SECRET: your_jwt_secret_key
       REDIS_HOST: redis
       REDIS_PORT: "6379"
+      # browser origins allowed to call the gateway (comma separated); empty = built-in defaults
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
       # rate limiting (defaults = original hard-coded values); relaxed by tests/docker-compose.tests.yaml
-      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-10}
-      THROTTLE_LOGIN_LIMIT: ${THROTTLE_LOGIN_LIMIT:-5}
-      THROTTLE_REGISTER_LIMIT: ${THROTTLE_REGISTER_LIMIT:-3}
+      THROTTLE_LIMIT: ${THROTTLE_LIMIT:-300}
+      THROTTLE_LOGIN_LIMIT: ${THROTTLE_LOGIN_LIMIT:-20}
+      THROTTLE_REGISTER_LIMIT: ${THROTTLE_REGISTER_LIMIT:-10}
     depends_on:
       auth-service:
         condition: service_started
       events-service:
         condition: service_started
       tickets-service:
+        condition: service_started
+      payments-service:
         condition: service_started
       redis:
         condition: service_started
@@ -540,6 +578,8 @@ services:
       KAFKA_BROKER: kafka:29092
       JWT_SECRET: your_jwt_secret_key
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       pgbouncer:
         condition: service_healthy
       redis:
@@ -574,6 +614,8 @@ services:
       DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
       KAFKA_BROKER: kafka:29092
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       pgbouncer:
         condition: service_healthy
       kafka:
@@ -605,7 +647,12 @@ services:
       PORT: "3004"
       DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
       KAFKA_BROKER: kafka:29092
+      PAYMENTS_SERVICE_URL: http://payments-service:3005
+      # unpaid bookings release their seats after this many minutes (Stripe minimum is 30)
+      PENDING_TICKET_TTL_MINUTES: ${PENDING_TICKET_TTL_MINUTES:-30}
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       pgbouncer:
         condition: service_healthy
       kafka:
@@ -614,6 +661,45 @@ services:
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3004/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  payments-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        SERVICE: payments-service
+    container_name: eventflowapp-payments-service
+    <<: *app-limits
+    # not published: reached by the tickets-service and (webhook) through the api-gateway
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: payments-service
+      NODE_ENV: production
+      PORT: "3005"
+      DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
+      KAFKA_BROKER: kafka:29092
+      # ---- Stripe (https://dashboard.stripe.com/test/apikeys) - put the real values in .env ----
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_CURRENCY: ${STRIPE_CURRENCY:-usd}
+      # where Stripe sends the browser back after paying (must be reachable from the user's browser)
+      CLIENT_URL: ${CLIENT_URL:-http://localhost:4000}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+      pgbouncer:
+        condition: service_healthy
+      kafka:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3005/health >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 5
@@ -637,9 +723,19 @@ services:
       PORT: "3006"
       DATABASE_URL: postgres://eventflowapp:eventflow_password@pgbouncer:6432/eventflowapp
       KAFKA_BROKER: kafka:29092
-      SMTP_HOST: mailhog
-      SMTP_PORT: "1025"
+      # Default = bundled MailHog (UI http://localhost:8025). For real delivery (e.g. Gmail) set in .env:
+      #   APP_SMTP_HOST=smtp.gmail.com APP_SMTP_PORT=587 APP_SMTP_REQUIRE_TLS=true
+      #   APP_SMTP_USER=you@gmail.com APP_SMTP_PASSWORD=<16-char app password> APP_SMTP_FROM="EventFlow <you@gmail.com>"
+      SMTP_HOST: ${APP_SMTP_HOST:-}
+      SMTP_PORT: ${APP_SMTP_PORT:-}
+      SMTP_SECURE: ${APP_SMTP_SECURE:-}
+      SMTP_REQUIRE_TLS: ${APP_SMTP_REQUIRE_TLS:-}
+      SMTP_USER: ${APP_SMTP_USER:-}
+      SMTP_PASSWORD: ${APP_SMTP_PASSWORD:-}
+      SMTP_FROM: ${APP_SMTP_FROM:-}
     depends_on:
+      db-migrate:
+        condition: service_completed_successfully
       pgbouncer:
         condition: service_healthy
       mailhog:
@@ -666,7 +762,7 @@ services:
     build:
       context: ./client
       args:
-        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:-http://136.71.169.139:3000}
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:-http://136.65.129.38:3000}
     container_name: eventflowapp-client
     ports:
       - "4000:4000"

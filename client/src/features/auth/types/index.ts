@@ -26,6 +26,7 @@ export const registerSchema = z
     confirmPassword: z.string().min(6, {
       message: 'Confirm Password must be at least 6 characters long',
     }),
+    isOrganizer: z.boolean(),
   })
   .refine((data) => data.password === data.confirmPassword, {
     message: 'Passwords do not match',

@@ -1,12 +1,7 @@
+import { useEffect, useState } from 'react';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-
-interface User {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-}
+import type { User } from '@/types';
 
 interface AuthState {
   user: User | null;
@@ -25,27 +20,18 @@ export const useAuthStore = create<AuthState>()(
       isAuthenticated: false,
 
       setAuth: (user, accessToken) => {
+        // kept alongside the persisted store: external tools (e2e tests, scripts) read this key
         if (typeof window !== 'undefined') {
           localStorage.setItem('accessToken', accessToken);
         }
-
-        set({
-          user,
-          accessToken,
-          isAuthenticated: true,
-        });
+        set({ user, accessToken, isAuthenticated: true });
       },
 
       clearAuth: () => {
         if (typeof window !== 'undefined') {
           localStorage.removeItem('accessToken');
         }
-
-        set({
-          user: null,
-          accessToken: null,
-          isAuthenticated: false,
-        });
+        set({ user: null, accessToken: null, isAuthenticated: false });
       },
     }),
     {
@@ -58,3 +44,23 @@ export const useAuthStore = create<AuthState>()(
     },
   ),
 );
+
+/**
+ * `true` once the persisted auth state has been read from localStorage.
+ * Until then the server-rendered (logged-out) markup must not be replaced, otherwise
+ * guards would bounce a logged-in user to /login on every full page load.
+ */
+export function useAuthHydrated(): boolean {
+  const [hydrated, setHydrated] = useState(false);
+
+  useEffect(() => {
+    const unsubscribe = useAuthStore.persist.onFinishHydration(() =>
+      setHydrated(true),
+    );
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setHydrated(useAuthStore.persist.hasHydrated());
+    return unsubscribe;
+  }, []);
+
+  return hydrated;
+}

@@ -48,10 +48,10 @@ export async function api<T = any>(
   return { status: res.status, body, data: body?.data, traceId: res.headers.get('x-trace-id') };
 }
 
-export async function registerAndLogin(prefix = 'it') {
+export async function registerAndLogin(prefix = 'it', role: 'USER' | 'ORGANIZER' = 'USER') {
   const email = uniqueEmail(prefix);
   const password = 'Passw0rd!123';
-  const reg = await api('POST', '/auth/register', { body: { email, password, name: `User ${prefix}` } });
+  const reg = await api('POST', '/auth/register', { body: { email, password, name: `User ${prefix}`, role } });
   if (reg.status !== 201) throw new Error(`register failed: ${reg.status} ${JSON.stringify(reg.body)}`);
   const login = await api('POST', '/auth/login', { body: { email, password } });
   if (login.status !== 201) throw new Error(`login failed: ${login.status} ${JSON.stringify(login.body)}`);
@@ -67,7 +67,7 @@ export async function createPublishedEvent(token: string, over: Record<string, u
       date: '2030-06-01T18:00:00.000Z',
       location: 'Test Hall',
       capacity: 50,
-      price: 1500,
+      price: 0, // free by default: paid events need Stripe (see the "paid events" test)
       ...over,
     },
   });

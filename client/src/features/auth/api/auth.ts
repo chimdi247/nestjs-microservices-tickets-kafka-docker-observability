@@ -1,4 +1,4 @@
-import { apiClient } from '@/lib/api-client';
+import { http } from '@/lib/api-client';
 import type { User, LoginCredentials, RegisterData } from '@/types';
 
 interface LoginResponse {
@@ -6,19 +6,14 @@ interface LoginResponse {
   user: User;
 }
 
-interface RegisterResponse {
-  user: User;
-}
-
 export async function loginUser(
   credentials: LoginCredentials,
 ): Promise<LoginResponse> {
-  const result = await apiClient.post<{ access_token: string; user: User }>(
+  // the auth-service answers { access_token, user }
+  const data = await http.post<{ access_token: string; user: User }>(
     '/auth/login',
     credentials,
   );
-
-  const data = result as unknown as { access_token: string; user: User };
 
   return {
     accessToken: data.access_token,
@@ -28,12 +23,10 @@ export async function loginUser(
 
 export async function registerUser(
   data: RegisterData,
-): Promise<RegisterResponse> {
-  const user = await apiClient.post<User>('/auth/register', data);
-  return { user: user as unknown as User };
+): Promise<{ userId: string }> {
+  return http.post<{ userId: string }>('/auth/register', data);
 }
 
 export async function getProfile(): Promise<User> {
-  const user = await apiClient.get<User>('/auth/profile');
-  return user as unknown as User;
+  return http.get<User>('/auth/profile');
 }

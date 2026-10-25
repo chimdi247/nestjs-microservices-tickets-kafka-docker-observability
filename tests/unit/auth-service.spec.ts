@@ -29,14 +29,14 @@ describe('AuthServiceService', () => {
       (bcrypt.hash as jest.Mock).mockResolvedValue('$2b$10$hashed');
       const { service, kafka } = build({
         select: [[]],
-        insert: [[{ id: 'u1', email: 'a@b.com', name: 'A' }]],
+        insert: [[{ id: 'u1', email: 'a@b.com', name: 'A', role: 'USER' }]],
       });
       const counter = jest.spyOn(bizMetrics.usersRegistered, 'add');
 
       const res = await service.register('a@b.com', 'secret1', 'A');
 
       expect(bcrypt.hash).toHaveBeenCalledWith('secret1', 10);
-      expect(res).toEqual({ message: 'User registered successfully', userId: 'u1' });
+      expect(res).toEqual({ message: 'User registered successfully', userId: 'u1', role: 'USER' });
       expect(kafka.emit).toHaveBeenCalledWith(
         KAFKA_TOPICS.USER_REGISTERED,
         expect.objectContaining({ userId: 'u1', email: 'a@b.com' }),
@@ -70,7 +70,7 @@ describe('AuthServiceService', () => {
 
       const res = await service.login('a@b.com', 'right');
 
-      expect(jwt.sign).toHaveBeenCalledWith({ sub: 'u1', email: 'a@b.com' });
+      expect(jwt.sign).toHaveBeenCalledWith({ sub: 'u1', email: 'a@b.com', role: 'ADMIN' });
       expect(res.access_token).toBe('signed.jwt.token');
       expect(res.user).toEqual({ id: 'u1', email: 'a@b.com', name: 'A', role: 'ADMIN' });
       expect(kafka.emit).toHaveBeenCalledWith(KAFKA_TOPICS.USER_LOGIN, expect.any(Object));

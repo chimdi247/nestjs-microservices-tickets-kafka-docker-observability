@@ -73,7 +73,7 @@ export function LoginForm() {
         />
 
         <Button type="submit" className="w-full" disabled={isPending}>
-          {isPending ? 'Signing in...' : 'Sign In'}
+          {isPending ? 'Signing in...' : 'Sign in'}
         </Button>
 
         <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">

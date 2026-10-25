@@ -26,6 +26,7 @@ export function RegisterForm() {
       email: '',
       password: '',
       confirmPassword: '',
+      isOrganizer: false,
     },
   });
 
@@ -34,6 +35,7 @@ export function RegisterForm() {
       name: data.name,
       email: data.email,
       password: data.password,
+      role: data.isOrganizer ? 'ORGANIZER' : 'USER',
     });
   }
 
@@ -116,8 +118,31 @@ export function RegisterForm() {
           )}
         />
 
+        <FormField
+          control={form.control}
+          name="isOrganizer"
+          render={({ field }) => (
+            <FormItem>
+              <label className="flex cursor-pointer items-start gap-3 rounded-md border p-3 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 size-4 accent-[var(--primary)]"
+                  checked={field.value}
+                  onChange={(e) => field.onChange(e.target.checked)}
+                />
+                <span>
+                  <span className="font-medium">I want to organize events</span>
+                  <span className="block text-muted-foreground">
+                    Lets you create events, sell tickets and check guests in.
+                  </span>
+                </span>
+              </label>
+            </FormItem>
+          )}
+        />
+
         <Button type="submit" className="w-full" disabled={isPending}>
-          {isPending ? 'Signing up...' : 'Create Account'}
+          {isPending ? 'Creating account...' : 'Create account'}
         </Button>
 
         <p className="text-center text-sm text-zinc-600 dark:text-zinc-400">

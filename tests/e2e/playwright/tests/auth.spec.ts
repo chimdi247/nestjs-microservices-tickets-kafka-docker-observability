@@ -40,7 +40,7 @@ test.describe('authentication (UI -> gateway -> auth-service -> postgres)', () =
     expect(token).toBeTruthy();
   });
 
-  test('new user can register and is sent to the login page', async ({ page }) => {
+  test('new user can register and is signed in straight away', async ({ page }) => {
     const email = `pw-${Date.now()}@example.com`;
     await page.goto('/register');
     await page.getByPlaceholder('Your name').fill('Playwright User');
@@ -49,8 +49,9 @@ test.describe('authentication (UI -> gateway -> auth-service -> postgres)', () =
     await page.getByPlaceholder('confirm your password').fill('Passw0rd!123');
     await page.getByRole('button', { name: /sign up|register|create/i }).click();
 
-    await expect(page.getByText('Registered successfully')).toBeVisible();
-    await expect(page).toHaveURL(/\/login/);
+    await expect(page.getByText('Account created')).toBeVisible();
+    await expect(page).toHaveURL('/');
+    await expect(page.getByRole('heading', { name: /welcome back/i })).toBeVisible();
   });
 });
 

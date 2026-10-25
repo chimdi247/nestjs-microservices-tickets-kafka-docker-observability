@@ -10,7 +10,7 @@ export class AuthController {
   @Post('register')
   @Throttle({
     default: {
-      limit: Number(process.env.THROTTLE_REGISTER_LIMIT ?? 3),
+      limit: Number(process.env.THROTTLE_REGISTER_LIMIT ?? 10),
       ttl: Number(process.env.THROTTLE_TTL_MS ?? 60000),
     },
   })
@@ -21,7 +21,7 @@ export class AuthController {
   @Post('login')
   @Throttle({
     default: {
-      limit: Number(process.env.THROTTLE_LOGIN_LIMIT ?? 5),
+      limit: Number(process.env.THROTTLE_LOGIN_LIMIT ?? 20),
       ttl: Number(process.env.THROTTLE_TTL_MS ?? 60000),
     },
   })

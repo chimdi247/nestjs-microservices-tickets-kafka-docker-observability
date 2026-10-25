@@ -41,7 +41,11 @@ export class NotificationsServiceService {
     quantity: number;
     totalPrice: number;
   }) {
-    const email = data.email || 'user@example.com'; // Fallback for demo
+    const email = data.email;
+    if (!email) {
+      this.logger.warn(`No e-mail for user ${data.userId}; skipping ticket confirmation`);
+      return;
+    }
     this.logger.log(`Sending ticket confirmation to ${email}`);
 
     const html = `
@@ -63,24 +67,67 @@ export class NotificationsServiceService {
     ticketId: string;
     userId: string;
     email?: string;
+    eventTitle?: string;
   }) {
-    const email = data.email || 'user@example.com';
+    const email = data.email;
+    if (!email) {
+      this.logger.warn(`No e-mail for user ${data.userId}; skipping cancellation notice`);
+      return;
+    }
     this.logger.log(`Sending cancellation notice to ${email}`);
 
     const html = `
       <h1>Ticket Cancelled</h1>
-      <p>Your ticket has been cancelled as requested.</p>
+      <p>Your ticket${data.eventTitle ? ` for <strong>${data.eventTitle}</strong>` : ''} has been cancelled as requested.</p>
       <p>If you did not request this cancellation, please contact support.</p>
     `;
 
     await this.emailService.sendEmail(email, 'Ticket Cancelled', html);
   }
 
-  sendEventCancelledEmail(data: {
+  async sendEventCancelledEmail(data: {
     eventId: string;
     eventTitle?: string;
     organizerId: string;
+    attendees?: { email: string; name: string; ticketCode: string }[];
   }) {
-    this.logger.log(`Sending event cancellation notice to ${data.organizerId}`);
+    const attendees = data.attendees ?? [];
+    this.logger.log(
+      `Event ${data.eventId} cancelled; notifying ${attendees.length} attendee(s)`,
+    );
+
+    for (const a of attendees) {
+      const html = `
+        <h1>Event Cancelled</h1>
+        <p>Hi ${a.name},</p>
+        <p>Unfortunately <strong>${data.eventTitle ?? 'your event'}</strong> has been cancelled by the organizer.</p>
+        <p>Your ticket <strong>${a.ticketCode}</strong> has been cancelled automatically.</p>
+      `;
+      await this.emailService.sendEmail(
+        a.email,
+        'Event Cancelled',
+        html,
+      );
+    }
+  }
+
+  async sendRefundEmail(data: {
+    userId: string;
+    email?: string;
+    eventTitle?: string;
+    amount: number;
+    currency?: string;
+  }) {
+    if (!data.email) {
+      this.logger.warn(`No e-mail for user ${data.userId}; skipping refund notice`);
+      return;
+    }
+    const amount = `${(data.amount / 100).toFixed(2)} ${(data.currency ?? 'usd').toUpperCase()}`;
+    const html = `
+      <h1>Refund issued</h1>
+      <p>We refunded <strong>${amount}</strong>${data.eventTitle ? ` for <strong>${data.eventTitle}</strong>` : ''} to your original payment method.</p>
+      <p>It usually appears on your statement within 5-10 business days.</p>
+    `;
+    await this.emailService.sendEmail(data.email, 'Your refund', html);
   }
 }

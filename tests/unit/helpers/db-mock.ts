@@ -29,6 +29,9 @@ export function createDbMock(
       'values',
       'set',
       'returning',
+      'for',
+      'groupBy',
+      'onConflictDoNothing',
     ]) {
       c[m] = jest.fn(() => c);
     }
@@ -37,10 +40,12 @@ export function createDbMock(
     return c;
   };
 
-  const db = {
+  const db: Record<string, jest.Mock> = {
     select: jest.fn(() => chain('select')),
     insert: jest.fn(() => chain('insert')),
     update: jest.fn(() => chain('update')),
+    // transactions run against the same queued mock (the callback receives the db itself)
+    transaction: jest.fn(async (cb: (tx: unknown) => unknown) => cb(db)),
   };
   return { db };
 }

@@ -34,6 +34,8 @@ export class NotificationsServiceController {
       ticketId: string;
       ticketCode: string;
       userId: string;
+      email?: string;
+      eventTitle?: string;
       quantity: number;
       totalPrice: number;
     },
@@ -46,13 +48,53 @@ export class NotificationsServiceController {
 
   @EventPattern(KAFKA_TOPICS.TICKET_CANCELLED)
   async handleTicketCancelled(
-    @Payload() data: { ticketId: string; userId: string },
+    @Payload()
+    data: {
+      ticketId: string;
+      userId: string;
+      email?: string;
+      eventTitle?: string;
+    },
   ) {
     this.logger.log(
       `Received ticket cancellation event: ${JSON.stringify(data)}`,
     );
     await trackKafkaMessage(KAFKA_TOPICS.TICKET_CANCELLED, () =>
       this.notificationsServiceService.sendTicketCancelledEmail(data),
+    );
+  }
+
+  @EventPattern(KAFKA_TOPICS.EVENT_CANCELLED)
+  async handleEventCancelled(
+    @Payload()
+    data: {
+      eventId: string;
+      eventTitle?: string;
+      organizerId: string;
+      attendees?: { email: string; name: string; ticketCode: string }[];
+    },
+  ) {
+    this.logger.log(`Received event cancelled event: ${data.eventId}`);
+    await trackKafkaMessage(KAFKA_TOPICS.EVENT_CANCELLED, () =>
+      this.notificationsServiceService.sendEventCancelledEmail(data),
+    );
+  }
+
+  @EventPattern(KAFKA_TOPICS.PAYMENT_REFUNDED)
+  async handlePaymentRefunded(
+    @Payload()
+    data: {
+      ticketId: string;
+      userId: string;
+      email?: string;
+      eventTitle?: string;
+      amount: number;
+      currency?: string;
+    },
+  ) {
+    this.logger.log(`Received payment refunded event for ticket ${data.ticketId}`);
+    await trackKafkaMessage(KAFKA_TOPICS.PAYMENT_REFUNDED, () =>
+      this.notificationsServiceService.sendRefundEmail(data),
     );
   }
 }

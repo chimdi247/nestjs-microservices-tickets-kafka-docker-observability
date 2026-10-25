@@ -52,9 +52,9 @@ describe('auth', () => {
 
 describe('events + tickets business flow (gateway -> events/tickets services -> postgres via pgbouncer -> kafka)', () => {
   it('organizer publishes an event, buyer purchases and cancels a ticket', async () => {
-    const organizer = await registerAndLogin('org');
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
     const buyer = await registerAndLogin('buyer');
-    const event = await createPublishedEvent(organizer.token, { capacity: 5, price: 2000 });
+    const event = await createPublishedEvent(organizer.token, { capacity: 5, price: 0 });
 
     const list = await api('GET', '/events');
     expect(list.status).toBe(200);
@@ -62,7 +62,7 @@ describe('events + tickets business flow (gateway -> events/tickets services -> 
 
     const purchase = await api('POST', '/tickets/purchase', { token: buyer.token, body: { eventId: event.id, quantity: 2 } });
     expect(purchase.status).toBe(201);
-    expect(purchase.data.ticket).toMatchObject({ quantity: 2, totalPrice: 4000, status: 'CONFIRMED' });
+    expect(purchase.data.ticket).toMatchObject({ quantity: 2, totalPrice: 0, status: 'CONFIRMED' });
 
     const mine = await api('GET', '/tickets/my-tickets', { token: buyer.token });
     expect(mine.data).toHaveLength(1);
@@ -72,7 +72,7 @@ describe('events + tickets business flow (gateway -> events/tickets services -> 
   });
 
   it('refuses to oversell an event', async () => {
-    const organizer = await registerAndLogin('org');
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
     const buyer = await registerAndLogin('buyer');
     const event = await createPublishedEvent(organizer.token, { capacity: 3 });
 
@@ -83,7 +83,7 @@ describe('events + tickets business flow (gateway -> events/tickets services -> 
   });
 
   it('lets only the organizer check a ticket in', async () => {
-    const organizer = await registerAndLogin('org');
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
     const buyer = await registerAndLogin('buyer');
     const event = await createPublishedEvent(organizer.token);
     const purchase = await api('POST', '/tickets/purchase', { token: buyer.token, body: { eventId: event.id, quantity: 1 } });
@@ -93,6 +93,106 @@ describe('events + tickets business flow (gateway -> events/tickets services -> 
     const ok = await api('POST', '/tickets/check-in', { token: organizer.token, body: { ticketCode: code } });
     expect(ok.status).toBe(201);
     expect(ok.data.ticket.status).toBe('CHECKED_IN');
+  });
+});
+
+describe('data consistency across services', () => {
+  it('only organizers can create events', async () => {
+    const user = await registerAndLogin('plain');
+    const res = await api('POST', '/events', {
+      token: user.token,
+      body: { title: 'Nope', date: '2030-06-01T18:00:00.000Z', location: 'x', capacity: 5, price: 0 },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it('event availability follows ticket purchases and cancellations', async () => {
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
+    const buyer = await registerAndLogin('buyer');
+    const event = await createPublishedEvent(organizer.token, { capacity: 10 });
+
+    const purchase = await api('POST', '/tickets/purchase', { token: buyer.token, body: { eventId: event.id, quantity: 4 } });
+    expect(purchase.status).toBe(201);
+    let detail = await api('GET', `/events/${event.id}`);
+    expect(detail.data).toMatchObject({ ticketsSold: 4, availableTickets: 6 });
+
+    await api('POST', `/tickets/${purchase.data.ticket.id}/cancel`, { token: buyer.token });
+    detail = await api('GET', `/events/${event.id}`);
+    expect(detail.data).toMatchObject({ ticketsSold: 0, availableTickets: 10 });
+  });
+
+  it('concurrent purchases never oversell the event', async () => {
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
+    const buyer = await registerAndLogin('buyer');
+    const event = await createPublishedEvent(organizer.token, { capacity: 5 });
+
+    const results = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        api('POST', '/tickets/purchase', { token: buyer.token, body: { eventId: event.id, quantity: 1 } }),
+      ),
+    );
+    expect(results.filter((r) => r.status === 201)).toHaveLength(5);
+    const detail = await api('GET', `/events/${event.id}`);
+    expect(detail.data).toMatchObject({ ticketsSold: 5, availableTickets: 0 });
+  });
+
+  it('cancelling an event cancels its unused tickets in the same transaction', async () => {
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
+    const buyer = await registerAndLogin('buyer');
+    const event = await createPublishedEvent(organizer.token);
+    await api('POST', '/tickets/purchase', { token: buyer.token, body: { eventId: event.id, quantity: 2 } });
+
+    const cancel = await api('POST', `/events/${event.id}/cancel`, { token: organizer.token });
+    expect(cancel.status).toBe(201);
+    expect(cancel.data.status).toBe('CANCELLED');
+
+    const mine = await api('GET', '/tickets/my-tickets', { token: buyer.token });
+    expect(mine.data[0]).toMatchObject({ status: 'CANCELLED', eventStatus: 'CANCELLED' });
+
+    const again = await api('POST', '/tickets/purchase', { token: buyer.token, body: { eventId: event.id, quantity: 1 } });
+    expect(again.status).toBe(400);
+  });
+});
+
+describe('paid events (Stripe)', () => {
+  it('rejects prices below the Stripe minimum of 50 cents', async () => {
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
+    const res = await api('POST', '/events', {
+      token: organizer.token,
+      body: { title: 'Cheap', date: '2030-06-01T18:00:00.000Z', location: 'x', capacity: 5, price: 20 },
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('holds seats as PENDING with a checkout URL, or releases them when Stripe is not configured', async () => {
+    const organizer = await registerAndLogin('org', 'ORGANIZER');
+    const buyer = await registerAndLogin('buyer');
+    const event = await createPublishedEvent(organizer.token, { capacity: 4, price: 2500 });
+
+    const purchase = await api('POST', '/tickets/purchase', { token: buyer.token, body: { eventId: event.id, quantity: 2 } });
+    const detail = await api('GET', `/events/${event.id}`);
+
+    if (purchase.status === 201) {
+      // STRIPE_SECRET_KEY configured
+      expect(purchase.data.ticket).toMatchObject({ status: 'PENDING', totalPrice: 5000 });
+      expect(purchase.data.checkoutUrl).toMatch(/^https:\/\/checkout\.stripe\.com\//);
+      expect(detail.data).toMatchObject({ ticketsSold: 2, availableTickets: 2 });
+
+      // cancelling an unpaid booking frees the seats immediately
+      const cancel = await api('POST', `/tickets/${purchase.data.ticket.id}/cancel`, { token: buyer.token });
+      expect(cancel.status).toBe(201);
+      const after = await api('GET', `/events/${event.id}`);
+      expect(after.data).toMatchObject({ ticketsSold: 0, availableTickets: 4 });
+    } else {
+      // payments not configured: the failed booking must not block any seat
+      expect(purchase.status).toBe(503);
+      expect(detail.data).toMatchObject({ ticketsSold: 0, availableTickets: 4 });
+    }
+  });
+
+  it('refuses webhooks without a valid Stripe signature', async () => {
+    const res = await api('POST', '/payments/webhook', { body: { id: 'evt_fake', type: 'checkout.session.completed' } });
+    expect([400, 503]).toContain(res.status);
   });
 });
 

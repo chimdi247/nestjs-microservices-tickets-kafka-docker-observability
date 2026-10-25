@@ -63,10 +63,19 @@ export class EventsService {
     }
   }
 
-  async findOne(id: string): Promise<EventResponse> {
+  async findOne(
+    id: string,
+    userId?: string,
+    userRole?: string,
+  ): Promise<EventResponse> {
     try {
+      const headers: Record<string, string> = {};
+      if (userId) headers['x-user-id'] = userId;
+      if (userRole) headers['x-user-role'] = userRole;
       const response = await firstValueFrom(
-        this.httpService.get<EventResponse>(`${this.eventServiceUrl}/${id}`),
+        this.httpService.get<EventResponse>(`${this.eventServiceUrl}/${id}`, {
+          headers,
+        }),
       );
 
       return response.data;

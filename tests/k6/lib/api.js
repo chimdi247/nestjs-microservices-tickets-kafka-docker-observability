@@ -15,8 +15,8 @@ const data = (res) => {
   try { return res.json('data'); } catch (_) { return undefined; }
 };
 
-export function register(email, password, name) {
-  return http.post(`${BASE_URL}/auth/register`, JSON.stringify({ email, password, name }), params(null, 'POST /auth/register'));
+export function register(email, password, name, role) {
+  return http.post(`${BASE_URL}/auth/register`, JSON.stringify(role ? { email, password, name, role } : { email, password, name }), params(null, 'POST /auth/register'));
 }
 
 export function login(email, password) {
@@ -34,8 +34,8 @@ export function bootstrap() {
 
   const orgEmail = `k6-org-${run}@example.com`;
   const buyerEmail = `k6-buyer-${run}@example.com`;
-  for (const [email, name] of [[orgEmail, 'k6 organizer'], [buyerEmail, 'k6 buyer']]) {
-    const r = register(email, password, name);
+  for (const [email, name, role] of [[orgEmail, 'k6 organizer', 'ORGANIZER'], [buyerEmail, 'k6 buyer', undefined]]) {
+    const r = register(email, password, name, role);
     if (r.status !== 201) throw new Error(`register failed: ${r.status} ${r.body}`);
   }
   const org = login(orgEmail, password);
@@ -44,7 +44,7 @@ export function bootstrap() {
 
   const ev = http.post(`${BASE_URL}/events`, JSON.stringify({
     title: `k6 event ${run}`, description: 'load test event', date: '2030-01-01T18:00:00.000Z',
-    location: 'k6 arena', capacity: 100000000, price: 2500,
+    location: 'k6 arena', capacity: 100000000, price: 0, // free: load tests must not call Stripe
   }), params(org.token, 'POST /events'));
   const eventId = data(ev)?.id;
   if (!eventId) throw new Error(`create event failed: ${ev.status} ${ev.body}`);

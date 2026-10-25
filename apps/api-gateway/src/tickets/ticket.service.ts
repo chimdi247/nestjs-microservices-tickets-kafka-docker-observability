@@ -19,10 +19,10 @@ export class TicketService {
   async purchase(
     data: PurchaseTicketDto,
     userId: string,
-  ): Promise<TicketResponse[]> {
+  ): Promise<unknown> {
     try {
       const response = await firstValueFrom(
-        this.httpService.post<TicketResponse[]>(
+        this.httpService.post<unknown>(
           `${this.ticketServiceUrl}/purchase`,
           data,
           {
@@ -68,10 +68,25 @@ export class TicketService {
     }
   }
 
-  async cancel(id: string, userId: string): Promise<TicketResponse> {
+  async pay(id: string, userId: string): Promise<{ checkoutUrl: string }> {
     try {
       const response = await firstValueFrom(
-        this.httpService.post<TicketResponse>(
+        this.httpService.post<{ checkoutUrl: string }>(
+          `${this.ticketServiceUrl}/${id}/pay`,
+          {},
+          { headers: { 'x-user-id': userId } },
+        ),
+      );
+      return response.data;
+    } catch (error) {
+      this.handleError(error);
+    }
+  }
+
+  async cancel(id: string, userId: string): Promise<unknown> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post<unknown>(
           `${this.ticketServiceUrl}/${id}/cancel`,
           {},
           { headers: { 'x-user-id': userId } },
@@ -86,14 +101,15 @@ export class TicketService {
   async checkIn(
     data: CheckInTicketDto,
     organizerId: string,
-  ): Promise<TicketResponse> {
+    userRole: string,
+  ): Promise<unknown> {
     try {
       const response = await firstValueFrom(
-        this.httpService.post<TicketResponse>(
+        this.httpService.post<unknown>(
           `${this.ticketServiceUrl}/check-in`,
           data,
           {
-            headers: { 'x-user-id': organizerId },
+            headers: { 'x-user-id': organizerId, 'x-user-role': userRole },
           },
         ),
       );
@@ -106,13 +122,14 @@ export class TicketService {
   async findEventTickets(
     eventId: string,
     organizerId: string,
-  ): Promise<TicketResponse[]> {
+    userRole: string,
+  ): Promise<unknown[]> {
     try {
       const response = await firstValueFrom(
-        this.httpService.get<TicketResponse[]>(
+        this.httpService.get<unknown[]>(
           `${this.ticketServiceUrl}/event/${eventId}`,
           {
-            headers: { 'x-user-id': organizerId },
+            headers: { 'x-user-id': organizerId, 'x-user-role': userRole },
           },
         ),
       );

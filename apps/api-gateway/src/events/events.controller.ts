@@ -11,6 +11,7 @@ import {
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { EventsService } from './events.service';
+import { OptionalJwtAuthGuard } from '../optional-jwt.guard';
 import { CreateEventDto, UpdateEventDto } from '@app/common';
 
 @Controller('events')
@@ -30,9 +31,13 @@ export class EventsController {
   }
 
   //Public - get a single event
+  @UseGuards(OptionalJwtAuthGuard)
   @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.eventsService.findOne(id);
+  findOne(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Request() req: { user?: { userId: string; role?: string } },
+  ) {
+    return this.eventsService.findOne(id, req.user?.userId, req.user?.role);
   }
 
   @UseGuards(AuthGuard('jwt'))

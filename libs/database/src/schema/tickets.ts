@@ -30,9 +30,21 @@ export const tickets = pgTable('tickets', {
   ticketCode: varchar('ticket_code', { length: 20 }).unique().notNull(),
   purchasedAt: timestamp('purchased_at').defaultNow().notNull(),
   checkedInAt: timestamp('checked_in_at'),
+  /** only set while the ticket is PENDING (awaiting payment); the seats are released after it passes */
+  expiresAt: timestamp('expires_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
 
 export type Ticket = typeof tickets.$inferSelect;
 export type NewTicket = typeof tickets.$inferInsert;
+
+/**
+ * Ticket statuses that occupy seats of an event. CANCELLED tickets free their seats.
+ * Single source of truth: events-service (availability) and tickets-service (purchase) both use it.
+ */
+export const ACTIVE_TICKET_STATUSES = [
+  'PENDING',
+  'CONFIRMED',
+  'CHECKED_IN',
+] as const;
