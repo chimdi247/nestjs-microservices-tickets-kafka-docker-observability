@@ -25,6 +25,25 @@
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
 
+## Install stripe cli on ubuntu
+
+```
+
+sudo apt install -y gnupg
+curl -s https://packages.stripe.dev/api/security/keypair/stripe-cli-gpg/public | gpg --dearmor | sudo tee /usr/share/keyrings/stripe.gpg >/dev/null
+sudo apt update
+sudo apt install -y stripe
+stripe --version
+
+stripe login --interactive
+
+
+stripe listen \
+  --events checkout.session.completed,checkout.session.expired,checkout.session.async_payment_succeeded,checkout.session.async_payment_failed,charge.refunded \
+  --forward-to localhost:3000/payments/webhook
+
+```
+
 ## Project setup
 
 ```bash
